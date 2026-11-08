@@ -77,9 +77,19 @@ EXTRACT_JS = r"""
     const tag = el.tagName.toLowerCase();
     if (SKIP.has(tag)) return;
     const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden') return;
+    // display:none and opacity:0 hide the whole subtree; nothing to observe below them.
+    if (cs.display === 'none' || parseFloat(cs.opacity) === 0) return;
     const r = el.getBoundingClientRect();
-    if (r.width < 1 || r.height < 1) return;
+    const myRegion0 = LANDMARKS.has(tag) ? tag : region;
+    if (cs.visibility === 'hidden' || r.width < 1 || r.height < 1) {
+      // Zero-size wrappers (display:contents, unsized flex/grid shells) and visibility:hidden
+      // parents can still have painted descendants — descend without recording, unless the box
+      // clips its overflow (collapsed menus, 0-height accordions).
+      const clips = /hidden|clip/.test(cs.overflow) || /hidden|clip/.test(cs.overflowX) || /hidden|clip/.test(cs.overflowY);
+      if (cs.display !== 'contents' && clips) return;
+      for (const child of el.children) walk(child, depth + 1, parentKey, myRegion0);
+      return;
+    }
     const key = 'e' + (counter++);
     try { el.setAttribute('data-gtui', key); } catch (e) {}
     const style = {};

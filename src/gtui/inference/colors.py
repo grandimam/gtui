@@ -54,6 +54,8 @@ class Usage:
     bg_names: Counter = field(default_factory=Counter)
     text_names: Counter = field(default_factory=Counter)
     border_names: Counter = field(default_factory=Counter)
+    gradient_count: int = 0  # times this color was the first stop of a gradient surface
+    gradient_stops: list[str] = field(default_factory=list)
 
     @property
     def weight(self) -> float:
@@ -71,6 +73,7 @@ class ColorInference:
         self.tokens: dict[str, ColorToken] = {}
         self.scheme: str = "unknown"
         self.notes: list[str] = []
+        self.gradient_stops: list[str] = []  # accent gradient stops, when the accent is a gradient
 
     # -- collection ------------------------------------------------------------------------------
 
@@ -95,6 +98,22 @@ class ColorInference:
             if e.role == "img":
                 continue
             bg = st.background_color
+            if st.has_gradient and st.gradient_colors:
+                # A gradient surface is a painted surface too; its first stop stands in for it. This is
+                # how brand CTAs (Airbnb, Stripe) carry the accent without an opaque background-color.
+                g = self._use(st.gradient_colors[0])
+                if g:
+                    g.gradient_count += 1
+                    g.bg_count += 1
+                    g.bg_elements.append(e)
+                    if not g.gradient_stops:
+                        g.gradient_stops = list(st.gradient_colors)
+                    if e.role in _INTERACTIVE:
+                        g.interactive_bg += 1
+                    if "background" in e.css_vars:
+                        g.bg_names[e.css_vars["background"]] += 1
+                    elif "background-image" in e.css_vars:
+                        g.bg_names[e.css_vars["background-image"]] += 1
             if bg and len(bg) == 7:  # opaque only; translucent overlays are not surfaces
                 u = self._use(bg)
                 if u:
@@ -154,6 +173,9 @@ class ColorInference:
                     k.bg_names.update(u.bg_names)
                     k.text_names.update(u.text_names)
                     k.border_names.update(u.border_names)
+                    k.gradient_count += u.gradient_count
+                    if not k.gradient_stops:
+                        k.gradient_stops = u.gradient_stops
                     break
             else:
                 kept.append(u)
@@ -244,10 +266,18 @@ class ColorInference:
                 if lst:
                     u = lst[0]
                     self._token(role, u, u.bg_elements, u.bg_count, total_bg, base)
-            inverse = [u for u in neutrals if abs(lightness(u.color) - lightness(base)) > 0.5]
+            inverse = [u for u in neutrals if abs(lightness(u.color) - lightness(base)) > 0.5 and u.bg_count >= 3]
             if inverse:
                 u = max(inverse, key=lambda u: u.bg_count)
-                self._token("surface.inverse", u, u.bg_elements, u.bg_count, total_bg, base)
+                self._token(
+                    "surface.inverse",
+                    u,
+                    u.bg_elements,
+                    u.bg_count,
+                    total_bg,
+                    base,
+                    note="High-contrast inverted surface (dark buttons/chips on a light UI).",
+                )
 
         # Text roles. Primary = the highest-contrast neutral text color that is in real use (the
         # headline/body color); secondary/tertiary = progressively lower-contrast tiers. Volume alone
@@ -260,8 +290,12 @@ class ColorInference:
             by_contrast = sorted(
                 neutral_text, key=lambda u: -(contrast_ratio(u.color, base) if base is not None else u.text_chars)
             )
-            in_use = [u for u in by_contrast if u.text_chars >= 0.15 * max_chars or u.text_count >= 5]
-            primary = (in_use or by_contrast)[0]
+            # Candidates must carry real volume (a few bold labels in #000 do not define the body
+            # color). Among high-contrast candidates within ~1.5:1 of each other, prefer volume.
+            in_use = [u for u in by_contrast if u.text_chars >= 0.25 * max_chars] or by_contrast
+            top_contrast = contrast_ratio(in_use[0].color, base) if base is not None else 0
+            near_top = [u for u in in_use if base is None or contrast_ratio(u.color, base) >= top_contrast / 1.5]
+            primary = max(near_top, key=lambda u: u.text_chars)
             self._token(
                 "text.primary", primary, primary.text_elements, primary.text_count, total_text, base, kind="text"
             )
@@ -280,7 +314,7 @@ class ColorInference:
                     sec = lower_by_use[0]
                     self._token("text.secondary", sec, sec.text_elements, sec.text_count, total_text, base, kind="text")
                     s_contrast = contrast_ratio(sec.color, base)
-                    tert = [u for u in lower_by_use[1:] if contrast_ratio(u.color, base) < s_contrast - 0.3]
+                    tert = [u for u in lower_by_use[1:] if 3.0 <= contrast_ratio(u.color, base) < s_contrast - 0.3]
                     if tert:
                         self._token(
                             "text.tertiary",
@@ -301,6 +335,10 @@ class ColorInference:
         )
         if bg_sat:
             accent_u = bg_sat[0]
+            note = "Brand-adjacent hue. Keep its lightness/chroma; substitute your own hue if needed."
+            if accent_u.gradient_count and accent_u.gradient_count >= accent_u.bg_count / 2:
+                stops = " → ".join(accent_u.gradient_stops)
+                note = f"Rendered as a gradient on the source ({stops}); the first stop is the token. " + note
             self._token(
                 "accent.primary",
                 accent_u,
@@ -308,8 +346,10 @@ class ColorInference:
                 accent_u.bg_count,
                 total_bg,
                 base,
-                note="Brand-adjacent hue. Keep its lightness/chroma; substitute your own hue if needed.",
+                note=note,
             )
+            if accent_u.gradient_stops and len(accent_u.gradient_stops) > 1:
+                self.gradient_stops = list(accent_u.gradient_stops)
         else:
             link_sat = sorted([u for u in saturated if u.link_text >= 2], key=lambda u: -u.link_text)
             if link_sat:
@@ -404,6 +444,7 @@ class ColorInference:
                     u
                     for u in border_u[1:]
                     if is_neutral(u.color, 0.06)
+                    and u.color.opaque
                     and abs(lightness(u.color) - lightness(base)) > abs(lightness(b0.color) - lightness(base)) + 0.08
                 ]
                 if stronger:

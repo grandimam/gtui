@@ -101,6 +101,7 @@ def normalize(raw: dict[str, str]) -> ComputedStyle:
         color=color_hex(g("color")),
         background_color=color_hex(g("background-color")),
         has_gradient="gradient(" in bg_image,
+        gradient_colors=gradient_stops(bg_image) if "gradient(" in bg_image else [],
         has_background_image=bg_image != "none",
         font_family=(g("font-family") or "").strip(),
         font_size=px(g("font-size"), 0.0),
@@ -146,6 +147,21 @@ def normalize(raw: dict[str, str]) -> ComputedStyle:
         align_items=g("align-items") or "",
         justify_content=g("justify-content") or "",
     )
+
+
+_COLOR_TOKEN_RE = re.compile(r"(rgba?\([^)]*\)|oklch\([^)]*\)|oklab\([^)]*\)|color\([^)]*\)|#[0-9a-fA-F]{3,8})")
+
+
+def gradient_stops(background_image: str) -> list[str]:
+    """Opaque color stops of a gradient, as hex (max 4)."""
+    out: list[str] = []
+    for raw in _COLOR_TOKEN_RE.findall(background_image or ""):
+        c = parse_color(raw)
+        if c and not c.transparent and c.hex not in out:
+            out.append(c.hex)
+        if len(out) >= 4:
+            break
+    return out
 
 
 def primary_font(family: str) -> str:

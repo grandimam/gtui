@@ -25,7 +25,8 @@ LOW_VALUE_RE = re.compile(
 HIGH_VALUE_RE = re.compile(
     r"(pricing|features|product|docs|documentation|changelog|blog|customers|about|"
     r"dashboard|settings|integrations|templates|download|login|sign-?in|sign-?up|contact|"
-    r"components|design|guide)",
+    r"components|design|guide|explore|browse|search|rooms?|listings?|stays|gallery|catalog|"
+    r"collections?|items?|products?|places|map)",
     re.I,
 )
 AUTH_RE = re.compile(r"(login|sign-?in|sign-?up|register|auth)", re.I)

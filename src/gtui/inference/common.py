@@ -92,11 +92,17 @@ class Palette:
         if not scored or scored[0][0] > tolerance:
             return None
         best_d = scored[0][0]
+        # near-ties: anything within 0.004 of the best, or within tolerance for a preferred family
         ties = [role for d, role in scored if d <= best_d + 0.004]
         for prefix in prefer:
             for role in ties:
                 if role.startswith(prefix):
                     return role
+        if prefer:
+            for prefix in prefer:
+                for d, role in scored:
+                    if role.startswith(prefix) and d <= min(tolerance, best_d + 0.02):
+                        return role
         return ties[0]
 
     def describe(self, hex_value: str | None, prefer: tuple[str, ...] = ()) -> str | None:

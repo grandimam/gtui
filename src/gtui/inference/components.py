@@ -199,6 +199,10 @@ def _common_props(ctx: Context, members: list[ElementObservation]) -> dict[str, 
     props["background"] = (
         ctx.color_role(bg) if bg and sum(1 for s in st if s.background_color) >= len(st) / 2 else "transparent"
     )
+    gradients = [s.gradient_colors for s in st if s.has_gradient and s.gradient_colors]
+    if len(gradients) >= len(st) / 2:
+        stops = mode(tuple(g) for g in gradients) or gradients[0]
+        props["background"] = "gradient(" + " → ".join(ctx.color_role(c) or c for c in stops) + ")"
     text = mode([s.color for s in st if s.color])
     props["text"] = ctx.color_role(text, "text") if text else None
     bordered = [s for s in st if s.has_border]
@@ -225,6 +229,8 @@ def _button_variant(ctx: Context, e: ElementObservation) -> str:
     if e.text_length == 0 and abs(e.bounds.width - e.bounds.height) <= 6:
         return "icon"
     bg = parse_color(st.background_color) if st.background_color else None
+    if st.has_gradient and st.gradient_colors:
+        bg = parse_color(st.gradient_colors[0])
     parent = parse_color(ctx.parent_bg(e) or "") if ctx.parent_bg(e) else None
     accent = ctx.profile.color("accent.primary")
     danger = ctx.profile.color("status.danger")

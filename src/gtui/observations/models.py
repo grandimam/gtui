@@ -48,6 +48,7 @@ class ComputedStyle(BaseModel):
     color: str | None = None
     background_color: str | None = None
     has_gradient: bool = False
+    gradient_colors: list[str] = Field(default_factory=list)  # sRGB hex stops, when has_gradient
     has_background_image: bool = False
     font_family: str = ""
     font_size: float = 0.0

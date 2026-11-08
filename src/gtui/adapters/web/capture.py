@@ -24,6 +24,7 @@ from gtui.adapters.web.explorer import (
     Candidate,
     ExplorerState,
     normalize_url,
+    same_site,
     sample_for_inspection,
     style_signatures,
 )
@@ -138,19 +139,22 @@ async def capture_site(url: str, opts: CaptureOptions, progress: ProgressFn | No
             for vp in viewports:
                 say(f"[{pages_done + 1}/{opts.max_pages}] {cand.url} @ {vp}")
                 try:
-                    result = await _capture_page(page, cand.url, vp, opts, state, obs, first=(pages_done == 0))
+                    links, recorded = await _capture_page(page, cand.url, vp, opts, state, obs, first=(pages_done == 0))
                 except Exception as exc:  # network errors, timeouts
                     log.warning("capture failed for %s: %s", cand.url, exc)
                     obs.skipped.append({"url": cand.url, "reason": f"error: {exc}"[:200]})
                     break
-                if result is None:
+                if links is None:
                     break
-                captured_any = True
+                # a low-novelty page still contributes its links, but does not spend the budget
+                captured_any = captured_any or recorded
                 if vp is primary or vp == viewports[0]:
-                    new = state.enqueue(result, cand.url)
+                    new = state.enqueue(links, cand.url)
                     queue.extend(new)
                     for c in queue:
                         c.score = state.score(c)
+                if not recorded:
+                    break
             if captured_any:
                 pages_done += 1
         await page.close()
@@ -167,13 +171,17 @@ async def _capture_page(
     obs: ObservationSet,
     *,
     first: bool,
-) -> list[dict] | None:
-    """Capture one page at one viewport. Returns discovered links, or None if skipped."""
+) -> tuple[list[dict] | None, bool]:
+    """Capture one page at one viewport.
+
+    Returns ``(links, recorded)``: links discovered on the page (None if the page could not be
+    loaded) and whether observations were recorded (False for low-novelty skips).
+    """
     await page.set_viewport_size({"width": viewport.width, "height": viewport.height})
     response = await page.goto(url, wait_until="load", timeout=opts.timeout_ms)
     if response is not None and response.status >= 400:
         obs.skipped.append({"url": url, "reason": f"http {response.status}"})
-        return None
+        return None, False
     try:
         await page.wait_for_load_state("networkidle", timeout=min(6000, opts.timeout_ms))
     except Exception:
@@ -188,9 +196,13 @@ async def _capture_page(
     final_url = normalize_url(data.get("url") or url)
     if final_url != url:
         state.mark_visited(final_url)
+        if first and not same_site(final_url, state.origin):
+            # geo / locale redirect (airbnb.com -> airbnb.ae): explore the site we actually landed on
+            log.info("entry redirected to %s; adopting it as the exploration origin", final_url)
+            state.origin = final_url
     pid = page_id(final_url, viewport.as_tuple())
     if any(p.id == pid and not p.skipped_reason for p in obs.pages):
-        return data.get("links", [])
+        return data.get("links", []), False
 
     elements_raw: list[dict] = data.get("elements", [])
     sigs = style_signatures(elements_raw)
@@ -210,7 +222,7 @@ async def _capture_page(
             )
         )
         obs.skipped.append({"url": final_url, "reason": f"low novelty {novelty:.0%}"})
-        return data.get("links", [])
+        return data.get("links", []), False
     state.absorb(sigs)
 
     # Screenshot
@@ -328,7 +340,7 @@ async def _capture_page(
                     **common,
                 )
             )
-    return data.get("links", [])
+    return data.get("links", []), True
 
 
 def _interactive(el: dict) -> bool:
